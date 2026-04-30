@@ -55,12 +55,42 @@ on macOS; `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 }
 ```
 
-`--root` pins the launch root. Every command the model runs is forced to
-execute inside that directory or one of its subdirectories. If you omit
-`--root`, `shell-mcp` uses its own current working directory at launch.
+Or use the env var form, which is equivalent:
+
+```json
+{
+  "mcpServers": {
+    "shell": {
+      "command": "shell-mcp",
+      "env": { "SHELL_MCP_ROOT": "/Users/you/code/your-project" }
+    }
+  }
+}
+```
+
+> **Heads up: setting `cwd` in your Desktop MCP config does NOT scope
+> `shell-mcp`.** Claude Desktop launches MCP servers from an undefined
+> working directory (often `/` on macOS), and `cwd` in the Desktop config
+> is not honoured for stdio servers. **Always pass `--root` or set
+> `SHELL_MCP_ROOT`** when running under Desktop — otherwise the safety
+> boundary collapses to the whole filesystem.
 
 Restart Claude Desktop and the `shell_exec` and `shell_describe` tools will
 be available.
+
+### Launch-root precedence
+
+`shell-mcp` resolves the launch root from these sources, highest precedence
+first:
+
+1. `--root <PATH>` CLI flag
+2. `SHELL_MCP_ROOT` environment variable
+3. The process's current working directory at launch (fine for direct
+   shell invocations; **unsafe under Claude Desktop** — see above)
+
+A user-supplied path (flag or env) **must be absolute, must exist, and
+must be a directory**. The chosen path is canonicalized so symlinks are
+resolved up front.
 
 ## Tools
 

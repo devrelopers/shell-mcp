@@ -7,10 +7,12 @@
 pub mod allowlist;
 pub mod config;
 pub mod exec;
+pub mod root;
 pub mod safety;
 pub mod tools;
 
 pub use allowlist::{Allowlist, Rule};
 pub use config::{Config, LoadedConfig};
 pub use exec::{ExecOptions, ExecOutcome};
+pub use root::{resolve_root, ResolvedRoot, RootError, RootSource};
 pub use safety::{Rejection, RejectionKind};
