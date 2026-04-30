@@ -186,3 +186,143 @@ allow = ["seq **"]
     );
     assert!(result.outcome.stdout.lines().count() <= shell_mcp::exec::MAX_LINES_PER_STREAM);
 }
+
+// --- Allowlisted-write tests --------------------------------------------
+//
+// `mkdir` is a clean cross-platform write command in spirit, but on Windows
+// it's a `cmd.exe` builtin rather than a standalone executable on `PATH`.
+// We split into per-platform tests so each one allowlists the actual
+// program tokens that get spawned (and so the rejection test below uses a
+// different real write command per platform).
+
+#[cfg(unix)]
+#[tokio::test]
+async fn allowlisted_write_command_creates_directory_unix() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        &tmp.path().join(".shell-mcp.toml"),
+        r#"allow = ["mkdir *"]"#,
+    );
+    let engine = Engine::new(tmp.path());
+
+    let new_dir_name = "created-by-shell-mcp";
+    let result = engine
+        .exec(&format!("mkdir {new_dir_name}"), None)
+        .await
+        .unwrap_or_else(|e| panic!("expected ok, got {e:?}"));
+
+    assert_eq!(
+        result.outcome.exit_code,
+        Some(0),
+        "stderr was: {}",
+        result.outcome.stderr
+    );
+    assert!(!result.outcome.truncated);
+    assert_eq!(result.matched_rule, "mkdir *");
+
+    let created = engine.root().join(new_dir_name);
+    assert!(
+        created.is_dir(),
+        "expected `{}` to exist after mkdir",
+        created.display()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn allowlisted_write_command_creates_directory_windows() {
+    // On Windows we go through cmd.exe so we can use its `mkdir` builtin.
+    // The allowlist names the *program* token (`cmd`) plus the exact
+    // remaining arguments. We accept any directory name via `*` so the test
+    // chooses the path it wants to create.
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        &tmp.path().join(".shell-mcp.toml"),
+        r#"allow = ["cmd /C mkdir *"]"#,
+    );
+    let engine = Engine::new(tmp.path());
+
+    let new_dir_name = "created-by-shell-mcp";
+    let result = engine
+        .exec(&format!("cmd /C mkdir {new_dir_name}"), None)
+        .await
+        .unwrap_or_else(|e| panic!("expected ok, got {e:?}"));
+
+    assert_eq!(
+        result.outcome.exit_code,
+        Some(0),
+        "stderr was: {}",
+        result.outcome.stderr
+    );
+    assert!(!result.outcome.truncated);
+    assert_eq!(result.matched_rule, "cmd /C mkdir *");
+
+    let created = engine.root().join(new_dir_name);
+    assert!(
+        created.is_dir(),
+        "expected `{}` to exist after cmd /C mkdir",
+        created.display()
+    );
+}
+
+// --- Rejection tests ----------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unallowlisted_write_command_is_rejected_unix() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Allowlist *only* `mkdir *` — `touch` should be denied.
+    write(
+        &tmp.path().join(".shell-mcp.toml"),
+        r#"allow = ["mkdir *"]"#,
+    );
+    let engine = Engine::new(tmp.path());
+    let cmd = "touch touched.txt";
+    assert_rejected_as_not_allowlisted(&engine, tmp.path(), cmd, "touched.txt").await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn unallowlisted_write_command_is_rejected_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Allowlist `cmd /C mkdir *` — `cmd /C copy ...` is a different rule
+    // and should be denied even though it shares the `cmd` program token.
+    write(
+        &tmp.path().join(".shell-mcp.toml"),
+        r#"allow = ["cmd /C mkdir *"]"#,
+    );
+    let engine = Engine::new(tmp.path());
+    let cmd = "cmd /C copy nul touched.txt";
+    assert_rejected_as_not_allowlisted(&engine, tmp.path(), cmd, "touched.txt").await;
+}
+
+async fn assert_rejected_as_not_allowlisted(
+    engine: &Engine,
+    root: &Path,
+    cmd: &str,
+    side_effect_path: &str,
+) {
+    let err = engine.exec(cmd, None).await.unwrap_err();
+    let EngineError::NotAllowed { command, sources } = err else {
+        panic!("expected NotAllowed for `{cmd}`, got: {err:?}");
+    };
+    assert_eq!(command, cmd);
+
+    // The error must name the loaded TOML so the user knows *where* to add
+    // a rule. We filter out any global `~/.shell-mcp.toml` that the host
+    // machine running CI might happen to have.
+    let toml_path = root.join(".shell-mcp.toml");
+    let in_tree: Vec<_> = sources.iter().filter(|p| p.starts_with(root)).collect();
+    assert_eq!(
+        in_tree.len(),
+        1,
+        "expected the project's .shell-mcp.toml in the loaded sources, got {sources:?}"
+    );
+    assert_eq!(in_tree[0], &toml_path);
+
+    // And the side effect must not have happened.
+    assert!(
+        !root.join(side_effect_path).exists(),
+        "rejected command must not have run"
+    );
+}
