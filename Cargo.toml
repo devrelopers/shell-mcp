@@ -10,7 +10,7 @@ repository = "https://github.com/devrelopers/shell-mcp"
 homepage = "https://github.com/devrelopers/shell-mcp"
 documentation = "https://docs.rs/shell-mcp"
 readme = "README.md"
-keywords = ["mcp", "shell", "claude", "anthropic", "model-context-protocol"]
+keywords = ["mcp", "shell", "claude", "anthropic", "model-context"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
