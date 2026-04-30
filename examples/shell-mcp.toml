@@ -1,0 +1,52 @@
+# Annotated example .shell-mcp.toml
+#
+# Drop this file as `.shell-mcp.toml` in your project root (or anywhere up
+# the directory tree). shell-mcp walks from the launched cwd up to the
+# filesystem root, collecting every `.shell-mcp.toml` it finds, then merges
+# `~/.shell-mcp.toml` underneath as the global default. Inner files override
+# outer files for `include_defaults`; rules from every file accumulate.
+#
+# Each `allow` entry is a shell-style pattern. Tokens are split with POSIX
+# quoting rules (so `"with spaces"` survives as one token). Pattern syntax:
+#
+#   *       matches any single token
+#   ?       matches any single character within a token
+#   [abc]   character class
+#   **      (only as the final token) matches zero or more remaining tokens
+#
+# Examples:
+#   "git status"              — exact match, no extra args
+#   "cargo build *"           — exactly one extra argument
+#   "cargo build **"          — any number of extra arguments
+#   "git commit -m **"        — git commit with -m and any message tokens
+#
+# Hard rules that cannot be overridden:
+#   - shell metacharacters (; && || | ` $() > < >>) are always rejected
+#   - `sudo`, `doas`, `su`, `rm -rf /`, fork bombs, etc. are always rejected
+#   - commands must run inside the launch root (no `..` escapes)
+
+# Set to false to start from an empty allowlist instead of the platform
+# read-only defaults. Defaults to true.
+include_defaults = true
+
+allow = [
+  # Build & test loop
+  "cargo build",
+  "cargo build **",
+  "cargo test",
+  "cargo test **",
+  "cargo check **",
+  "cargo clippy **",
+  "cargo fmt **",
+
+  # Repository hygiene
+  "git add **",
+  "git commit -m **",
+  "git restore **",
+  "git switch **",
+
+  # Project-specific scripts (write a script, allowlist it once,
+  # and you can pipe inside the script all you like).
+  "./scripts/deploy.sh **",
+  "./scripts/seed-db.sh",
+]
