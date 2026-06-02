@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use serde::{Deserialize, Serialize};
 
@@ -340,12 +340,27 @@ impl ShellServer {
 #[tool_handler]
 impl ServerHandler for ShellServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "shell-mcp provides scoped, allowlisted shell access. Call `shell_describe` \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("shell-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "shell-mcp provides scoped, allowlisted shell access. Call `shell_describe` \
              first to see the active rules and the resolved working directory, then \
              `shell_exec` to run commands. Pipelines, redirections, and `sudo` are always \
              rejected; write commands require an explicit per-directory `.shell-mcp.toml` \
              allowlist.",
-        )
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_info_reports_shell_mcp_identity() {
+        let server = ShellServer::new(Arc::new(Engine::new(".")));
+        let info = server.get_info();
+        assert_eq!(info.server_info.name, "shell-mcp");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
     }
 }
