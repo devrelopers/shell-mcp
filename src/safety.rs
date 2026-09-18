@@ -46,6 +46,19 @@ const HARD_DENY: &[&[&str]] = &[
     &["dd", "if=/dev/random"],
     &["chmod", "-R", "777", "/"],
     &["chown", "-R", "root", "/"],
+    // `find`'s own action flags run an arbitrary program per matched file
+    // (POSIX find(1)), independent of and unaffected by any allowlist rule
+    // for `find` itself: `find . -exec sh -c '...' \;` executes `sh` even
+    // though only `find **` was ever allowlisted. Denied as single tokens
+    // (not `["find", "-exec"]`) so this still catches the realistic case
+    // where other predicates sit between `find` and the action flag, e.g.
+    // `find /tmp -type f -exec rm {} \;`, and so it also protects any
+    // future default rule for another `find`-like tool.
+    &["-exec"],
+    &["-execdir"],
+    &["-ok"],
+    &["-okdir"],
+    &["-delete"],
 ];
 
 /// Why a command was refused.
@@ -242,6 +255,51 @@ mod tests {
             check_hard_denylist(&tokens),
             Err(Rejection::HardDeny { .. })
         ));
+    }
+
+    #[test]
+    fn find_exec_family_is_always_denied_even_with_predicates_between() {
+        // `-exec`/`-execdir` accept a `+`-terminated form (batch all matches
+        // into one invocation) as well as the classic `;`-terminated one.
+        // The `+` form has no `;` in it, so this test also proves the
+        // rejection does not depend on the semicolon caught above by
+        // `check_metacharacters`: it must be `check_hard_denylist` itself
+        // catching the action flag.
+        for bad in [
+            "find . -exec sh -c id +",
+            "find /tmp -type f -exec rm {} +",
+            "find . -execdir sh -c id +",
+            "find . -name secrets.txt -delete",
+        ] {
+            let tokens = tokenize(bad).unwrap();
+            assert!(
+                matches!(check_hard_denylist(&tokens), Err(Rejection::HardDeny { .. })),
+                "should reject: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_ok_family_is_denied_defense_in_depth() {
+        // `-ok`/`-okdir` only support the `;`-terminated form, which
+        // `check_metacharacters` already rejects before tokens ever reach
+        // `check_hard_denylist`. These entries are belt-and-suspenders in
+        // case that changes, not an independently reachable bypass today.
+        for bad in ["find . -ok rm {} ;", "find . -okdir rm {} ;"] {
+            let tokens = tokenize(bad).unwrap();
+            assert!(
+                matches!(check_hard_denylist(&tokens), Err(Rejection::HardDeny { .. })),
+                "should reject: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_find_without_action_flags_is_not_denied_by_hard_denylist() {
+        for good in ["find . -name *.rs", "find /tmp -type f", "find ."] {
+            let tokens = tokenize(good).unwrap();
+            assert!(check_hard_denylist(&tokens).is_ok(), "should allow: {good}");
+        }
     }
 
     #[test]
