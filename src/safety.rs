@@ -59,6 +59,29 @@ const HARD_DENY: &[&[&str]] = &[
     &["-ok"],
     &["-okdir"],
     &["-delete"],
+    // `find`'s file-writing actions: `-fprint FILE`, `-fprint0 FILE`,
+    // `-fprintf FILE FORMAT` and `-fls FILE` create or truncate FILE, which
+    // may live anywhere on disk (cwd containment only covers the working
+    // directory, not arguments). `-fprintf` writes attacker-chosen content,
+    // e.g. into `~/.ssh/authorized_keys` or a repo's `.git/config`.
+    &["-fprint"],
+    &["-fprint0"],
+    &["-fprintf"],
+    &["-fls"],
+];
+
+/// Flags that are only dangerous for a specific program, so they cannot be
+/// denied as bare tokens (e.g. `-o` is harmless for `grep` but writes a file
+/// for `tree`). Each entry is `(program, flag)`; the flag matches either as
+/// an exact token or as the `flag=value` form.
+const PROGRAM_DENY: &[(&str, &str)] = &[
+    // `rg --pre CMD` runs CMD once per searched file: arbitrary execution.
+    ("rg", "--pre"),
+    // `git diff/log/show --output=PATH` writes the output to PATH.
+    ("git", "--output"),
+    // `tree -o PATH` / `tree --output PATH` writes the listing to PATH.
+    ("tree", "-o"),
+    ("tree", "--output"),
 ];
 
 /// Why a command was refused.
@@ -149,6 +172,49 @@ pub fn check_hard_denylist(tokens: &[String]) -> Result<(), Rejection> {
         if contains_subsequence(tokens, rule) {
             return Err(Rejection::HardDeny {
                 rule: rule.join(" "),
+            });
+        }
+    }
+    check_program_flags(tokens)
+}
+
+/// Reject program-specific flags from [`PROGRAM_DENY`].
+///
+/// The program is identified by the basename of the first token, so
+/// `/usr/bin/rg --pre sh` is caught as well as `rg --pre sh`. For `tree`,
+/// bundled short options such as `-ao out.txt` are also checked, because
+/// tree accepts combined single-letter flags and `-o` consumes the next
+/// argument as the output path.
+fn check_program_flags(tokens: &[String]) -> Result<(), Rejection> {
+    let Some(first) = tokens.first() else {
+        return Ok(());
+    };
+    let program = Path::new(first)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(first.as_str());
+
+    for (prog, flag) in PROGRAM_DENY {
+        if program != *prog {
+            continue;
+        }
+        let hit = tokens[1..].iter().any(|tok| {
+            if tok == flag || tok.starts_with(&format!("{flag}=")) {
+                return true;
+            }
+            // Bundled short options, e.g. `tree -ao out.txt`.
+            if *prog == "tree" && flag.len() == 2 && !flag.starts_with("--") {
+                let letter = flag.as_bytes()[1] as char;
+                return tok.starts_with('-')
+                    && !tok.starts_with("--")
+                    && tok.len() > 2
+                    && tok[1..].contains(letter);
+            }
+            false
+        });
+        if hit {
+            return Err(Rejection::HardDeny {
+                rule: format!("{prog} {flag}"),
             });
         }
     }
@@ -273,7 +339,10 @@ mod tests {
         ] {
             let tokens = tokenize(bad).unwrap();
             assert!(
-                matches!(check_hard_denylist(&tokens), Err(Rejection::HardDeny { .. })),
+                matches!(
+                    check_hard_denylist(&tokens),
+                    Err(Rejection::HardDeny { .. })
+                ),
                 "should reject: {bad}"
             );
         }
@@ -288,7 +357,10 @@ mod tests {
         for bad in ["find . -ok rm {} ;", "find . -okdir rm {} ;"] {
             let tokens = tokenize(bad).unwrap();
             assert!(
-                matches!(check_hard_denylist(&tokens), Err(Rejection::HardDeny { .. })),
+                matches!(
+                    check_hard_denylist(&tokens),
+                    Err(Rejection::HardDeny { .. })
+                ),
                 "should reject: {bad}"
             );
         }
@@ -297,6 +369,65 @@ mod tests {
     #[test]
     fn plain_find_without_action_flags_is_not_denied_by_hard_denylist() {
         for good in ["find . -name *.rs", "find /tmp -type f", "find ."] {
+            let tokens = tokenize(good).unwrap();
+            assert!(check_hard_denylist(&tokens).is_ok(), "should allow: {good}");
+        }
+    }
+
+    #[test]
+    fn find_file_writing_actions_are_denied() {
+        for bad in [
+            "find . -fprint /tmp/out",
+            "find . -fprint0 /tmp/out",
+            "find . -maxdepth 0 -fprintf /home/u/.ssh/authorized_keys ssh-ed25519",
+            "find . -fls /tmp/out",
+        ] {
+            let tokens = tokenize(bad).unwrap();
+            assert!(
+                matches!(
+                    check_hard_denylist(&tokens),
+                    Err(Rejection::HardDeny { .. })
+                ),
+                "should reject: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn program_specific_write_and_exec_flags_are_denied() {
+        for bad in [
+            "rg --pre sh foo .",
+            "rg --pre=sh foo .",
+            "/usr/bin/rg --pre sh foo .",
+            "git diff --output=/tmp/x",
+            "git log --output /tmp/x",
+            "git show HEAD --output=/tmp/x",
+            "tree -o /tmp/x",
+            "tree -ao /tmp/x",
+            "tree --output=/tmp/x",
+        ] {
+            let tokens = tokenize(bad).unwrap();
+            assert!(
+                matches!(
+                    check_hard_denylist(&tokens),
+                    Err(Rejection::HardDeny { .. })
+                ),
+                "should reject: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn program_specific_flags_do_not_leak_to_other_programs() {
+        for good in [
+            "grep -o foo file.txt",
+            "rg --pretty foo .",
+            "rg -o foo .",
+            "git log --oneline",
+            "tree -a",
+            "tree --noreport",
+            "find . -name *.rs -print",
+        ] {
             let tokens = tokenize(good).unwrap();
             assert!(check_hard_denylist(&tokens).is_ok(), "should allow: {good}");
         }
